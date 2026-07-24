@@ -69,3 +69,114 @@ export async function sendChatMessage(
     clearTimeout(timeout);
   }
 }
+
+// ──────────────────────────────────────────────
+// Outbound API — proactive messaging
+// ──────────────────────────────────────────────
+
+export type PendingNotification = {
+  notification_id: string;
+  phone: string;
+  content: string;
+  customer_name: string;
+};
+
+type PendingResponse = {
+  items: PendingNotification[];
+};
+
+const OUTBOUND_TIMEOUT_MS = 10_000;
+
+/**
+ * Fetch pending outbound WhatsApp notifications from the backend.
+ */
+export async function getPendingOutbound(
+  limit = 20,
+): Promise<PendingNotification[]> {
+  const url = `${BACKEND_API_URL}/outbound/pending?limit=${limit}`;
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), OUTBOUND_TIMEOUT_MS);
+
+  try {
+    const res = await fetch(url, {
+      method: "GET",
+      headers: { "Content-Type": "application/json" },
+      signal: controller.signal,
+    });
+
+    if (!res.ok) {
+      console.warn(
+        `[outbound] GET /outbound/pending responded ${res.status}`,
+      );
+      return [];
+    }
+
+    const data: PendingResponse = await res.json();
+    return data.items;
+  } catch (err) {
+    console.warn("[outbound] Error fetching pending:", err);
+    return [];
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+/**
+ * Mark a notification as sent.
+ */
+export async function markOutboundSent(
+  notificationId: string,
+): Promise<void> {
+  try {
+    await fetch(`${BACKEND_API_URL}/outbound/${notificationId}/sent`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+    });
+  } catch (err) {
+    console.warn(
+      `[outbound] Error marking ${notificationId} as sent:`,
+      err,
+    );
+  }
+}
+
+/**
+ * Mark a notification as responded (customer replied).
+ */
+export async function markOutboundResponded(
+  notificationId: string,
+): Promise<void> {
+  try {
+    await fetch(`${BACKEND_API_URL}/outbound/${notificationId}/responded`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+    });
+  } catch (err) {
+    console.warn(
+      `[outbound] Error marking ${notificationId} as responded:`,
+      err,
+    );
+  }
+}
+
+/**
+ * Mark a notification as failed delivery.
+ */
+export async function markOutboundFailed(
+  notificationId: string,
+  error: string,
+): Promise<void> {
+  try {
+    await fetch(`${BACKEND_API_URL}/outbound/${notificationId}/failed`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ error }),
+    });
+  } catch (err) {
+    console.warn(
+      `[outbound] Error marking ${notificationId} as failed:`,
+      err,
+    );
+  }
+}
