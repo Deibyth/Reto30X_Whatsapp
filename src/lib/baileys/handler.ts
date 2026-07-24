@@ -9,6 +9,7 @@ import {
   setSessionIdForPhone,
 } from "../db";
 import { sendChatMessage } from "../api-client";
+import { startOutboundPoller } from "../../services/outbound-poller";
 
 export function setupHandler(sock: WASocket): void {
   sock.ev.on("messages.upsert", async ({ type, messages }) => {
@@ -170,4 +171,6 @@ export function setupHandler(sock: WASocket): void {
     }
   }, 2000);
 
+  // Start the proactive outbound poller
+  startOutboundPoller(sock);
 }
