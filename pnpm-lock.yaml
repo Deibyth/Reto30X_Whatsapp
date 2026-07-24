@@ -4,6 +4,9 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+patchedDependencies:
+  whatsapp-rust-bridge: 4ff14b9c4c266fb6f92a3b437ada7aee7dcf144a7fe59f3efabea80820fa774b
+
 importers:
 
   .:
@@ -1706,7 +1709,7 @@ snapshots:
       pino: 9.14.0
       protobufjs: 7.6.2
       sharp: 0.34.5
-      whatsapp-rust-bridge: 0.5.4
+      whatsapp-rust-bridge: 0.5.4(patch_hash=4ff14b9c4c266fb6f92a3b437ada7aee7dcf144a7fe59f3efabea80820fa774b)
       ws: 8.21.0
     transitivePeerDependencies:
       - bufferutil
@@ -2323,7 +2326,7 @@ snapshots:
 
   util-deprecate@1.0.2: {}
 
-  whatsapp-rust-bridge@0.5.4: {}
+  whatsapp-rust-bridge@0.5.4(patch_hash=4ff14b9c4c266fb6f92a3b437ada7aee7dcf144a7fe59f3efabea80820fa774b): {}
 
   which-module@2.0.1: {}
 

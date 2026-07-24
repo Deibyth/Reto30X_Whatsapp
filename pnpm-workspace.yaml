@@ -9,3 +9,5 @@ allowBuilds:
   'esbuild': true
   'protobufjs': true
   'sharp': true
+patchedDependencies:
+  whatsapp-rust-bridge: patches/whatsapp-rust-bridge.patch
