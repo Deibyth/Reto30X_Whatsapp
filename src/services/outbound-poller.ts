@@ -1,6 +1,9 @@
 /**
  * Outbound poller — periodically fetches pending outbound notifications
  * from the backend and sends them via WhatsApp.
+ *
+ * Waits for WhatsApp connection before sending. If a notification has
+ * an audio_url, it downloads and sends the audio message instead of text.
  */
 
 import type { WASocket } from "@whiskeysockets/baileys";
@@ -8,49 +11,104 @@ import {
   getPendingOutbound,
   markOutboundSent,
   markOutboundFailed,
+  downloadAudio,
 } from "../lib/api-client";
+import { setDataConsent } from "../lib/db";
+import fs from "node:fs";
+import path from "node:path";
 
 const POLL_INTERVAL_MS = 5_000;
+const LOG_FILE = path.resolve(process.cwd(), "data", "poller-debug.log");
+
+function log(msg: string) {
+  const line = `[${new Date().toISOString()}] ${msg}\n`;
+  fs.appendFileSync(LOG_FILE, line);
+  console.log(msg);
+}
 
 let intervalHandle: ReturnType<typeof setInterval> | null = null;
 
+/** Format phone to Baileys JID: "+57300123456" -> "57300123456@s.whatsapp.net" */
+function toJid(phone: string): string {
+  const cleaned = phone.replace(/[^0-9]/g, "");
+  return `${cleaned}@s.whatsapp.net`;
+}
+
 /**
- * Start polling the backend for pending outbound notifications.
+ * Start (or restart) polling the backend for pending outbound notifications.
+ *
+ * If already running, stops the old poller first — this ensures the socket
+ * reference stays fresh after Baileys reconnections.
  *
  * @param sock - The active WhatsApp socket
  */
 export function startOutboundPoller(sock: WASocket): void {
   if (intervalHandle) {
-    console.warn("[outbound-poller] Already running, skipping start");
-    return;
+    log("[outbound-poller] Restarting with fresh socket...");
+    clearInterval(intervalHandle);
+    intervalHandle = null;
   }
 
-  console.log(
+  log(
     `[outbound-poller] Started (polling every ${POLL_INTERVAL_MS}ms)`,
   );
 
   intervalHandle = setInterval(async () => {
     try {
+      // Esperar a que Baileys esté autenticado (sock.user se setea después del QR)
+      if (!sock.user) {
+        log(
+          "[outbound-poller] Esperando QR/autenticacion — skipping cycle",
+        );
+        return;
+      }
+
       const items = await getPendingOutbound(20);
 
       if (items.length === 0) {
         return;
       }
 
-      console.log(
+      log(
         `[outbound-poller] Processing ${items.length} pending notification(s)`,
       );
 
       for (const item of items) {
         try {
-          await sock.sendMessage(item.phone, { text: item.content });
+            const jid = toJid(item.phone);
+            log(`[outbound-poller] Attempting send to ${jid} (${item.notification_id}) audio=${!!item.audio_url}`);
+
+          // Auto-accept consent — el bot inicio el contacto, no pedir consentimiento al responder
+          setDataConsent(jid, "accepted");
+
+          if (item.audio_url) {
+            // Send audio message (download from backend first)
+            // NOTE: MP3 with ptt:true requires OGG Opus — WhatsApp silently drops MP3 voice notes.
+            // Sending as regular audio (no ptt) works with WhatsApp native MP3 playback.
+            const audioBytes = await downloadAudio(item.audio_url);
+            await sock.sendMessage(jid, {
+              audio: Buffer.from(audioBytes),
+              mimetype: "audio/mpeg",
+              ptt: false,
+            });
+            log(
+              `[outbound-poller] Audio sent to ${jid} (${item.notification_id})`,
+            );
+          } else {
+            // Send text message
+            await sock.sendMessage(jid, { text: item.content });
+            log(
+              `[outbound-poller] Text sent to ${jid} (${item.notification_id})`,
+            );
+          }
+
           await markOutboundSent(item.notification_id);
-          console.log(
-            `[outbound-poller] ✅ Sent to ${item.phone} (${item.notification_id})`,
-          );
         } catch (err) {
+          const errMsg = err instanceof Error ? err.message : String(err);
+          const errStack = err instanceof Error ? err.stack?.split('\n').slice(0,3).join(' | ') : '';
+          log(`[outbound-poller] Failed for ${item.phone}: ${errMsg} | ${errStack}`);
           console.error(
-            `[outbound-poller] ❌ Failed for ${item.phone}:`,
+            `[outbound-poller] Failed for ${item.phone}:`,
             err,
           );
           await markOutboundFailed(

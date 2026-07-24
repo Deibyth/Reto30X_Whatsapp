@@ -20,6 +20,16 @@ let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let reconnectAttempts = 0;
 const MAX_RECONNECT_ATTEMPTS = 8;
 
+// ─── Connection tracker para outbound-poller ─────────────────────────
+// Baileys 7.x no expone ws.readyState de forma confiable.
+// Este flag se setea desde el evento connection.update y es la fuente
+// de verdad para saber si podemos enviar mensajes.
+let _baileysReady = false;
+
+export function isBaileysReady(): boolean {
+  return _baileysReady;
+}
+
 export function getSock() {
   return sock;
 }
@@ -32,7 +42,7 @@ function scheduleReconnect(code?: number) {
   // Demasiados reintentos — esperar 5 minutos para destrabar rate limiting
   if (reconnectAttempts > MAX_RECONNECT_ATTEMPTS) {
     console.log(
-      `[bot] ⏸️ Demasiados reintentos (${reconnectAttempts}). Esperando 5 min...`,
+      `[bot] Demasiados reintentos (${reconnectAttempts}). Esperando 5 min...`,
     );
     reconnectTimer = setTimeout(async () => {
       reconnectTimer = null;
@@ -51,7 +61,7 @@ function scheduleReconnect(code?: number) {
   );
 
   console.log(
-    `[bot] ⏳ Reconnect #${reconnectAttempts} en ${(delay / 1000).toFixed(1)}s...`,
+    `[bot] Reconnect #${reconnectAttempts} en ${(delay / 1000).toFixed(1)}s...`,
   );
 
   reconnectTimer = setTimeout(async () => {
@@ -104,7 +114,7 @@ export async function start(): Promise<void> {
   for (const ev of eventLog) {
     sock.ev.on(ev, (data: unknown) => {
       console.log(
-        `[bot] 📡 evento ${ev}:`,
+        `[bot] evento ${ev}:`,
         JSON.stringify(data).slice(0, 150),
       );
     });
@@ -114,7 +124,7 @@ export async function start(): Promise<void> {
     const { connection, lastDisconnect, qr, isNewLogin, isOnline } = update;
 
     console.log(
-      "[bot] 📡 connection.update:",
+      "[bot] connection.update:",
       JSON.stringify({ connection, isNewLogin, isOnline, hasQr: !!qr, hasError: !!lastDisconnect?.error })
     );
 
@@ -143,6 +153,7 @@ export async function start(): Promise<void> {
     }
 
     if (connection === "open") {
+      _baileysReady = true;
       reconnectAttempts = 0;
       const phone = sock?.user?.id
         ? sock.user.id.split(":")[0]
@@ -152,22 +163,23 @@ export async function start(): Promise<void> {
         phone,
         qr_string: null,
       });
-      console.log("[bot] ✅ Conectado como:", phone);
+      console.log("[bot] Conectado como:", phone);
     }
 
     if (connection === "close") {
+      _baileysReady = false;
       const err = lastDisconnect?.error as any;
       const code = err?.output?.statusCode;
       const reason = err?.reason;
 
       console.log(
-        "[bot] ❌ Desconectado — code:",
+        "[bot] Desconectado — code:",
         code,
         "reason:",
         reason,
       );
       if (err) {
-        console.log("[bot] 🐛 Error completo:");
+        console.log("[bot] Error completo:");
         console.log("  message:", err.message);
         console.log("  cause:", err.cause?.message || err.cause);
         console.log("  stack (1st line):", err.stack?.split('\n')[1]?.trim());
