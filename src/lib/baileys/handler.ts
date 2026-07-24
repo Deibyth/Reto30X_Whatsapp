@@ -1,4 +1,5 @@
-import type { WASocket } from "@whiskeysockets/baileys";
+import type { WASocket, WAMessage } from "@whiskeysockets/baileys";
+import { downloadMediaMessage } from "@whiskeysockets/baileys";
 import {
   getOrCreateConversation,
   getConversationById,
@@ -10,7 +11,7 @@ import {
   getDataConsent,
   setDataConsent,
 } from "../db";
-import { sendChatMessage } from "../api-client";
+import { sendChatMessage, transcribeAudio, downloadAudio } from "../api-client";
 import { startOutboundPoller } from "../../services/outbound-poller";
 
 const CONSENT_URL =
@@ -59,9 +60,9 @@ function esNegativo(text: string): boolean {
 
 export function setupHandler(sock: WASocket): void {
   sock.ev.on("messages.upsert", async ({ type, messages }) => {
-    console.log(
-      `[bot] 📨 messages.upsert type=${type} cantidad=${messages.length}`,
-    );
+      console.log(
+        `[bot] messages.upsert type=${type} cantidad=${messages.length}`,
+      );
 
     // Procesar notify AND append (mensajes acumulados durante desconexión)
     if (type !== "notify" && type !== "append") {
@@ -97,10 +98,37 @@ export function setupHandler(sock: WASocket): void {
         continue;
       }
 
-      const text =
+      let text =
         msg.message?.conversation ||
         msg.message?.extendedTextMessage?.text ||
         msg.message?.imageMessage?.caption;
+
+      // ─── Audio entrante: descargar y transcribir ─────────────────────
+      if (!text && msg.message?.audioMessage) {
+        console.log(`[bot] Audio recibido, transcribiendo...`);
+        try {
+          const audioBytes = await downloadMediaMessage(
+            msg as WAMessage,
+            "buffer",
+            {},
+          );
+          if (audioBytes && audioBytes instanceof Buffer) {
+            const mimeType = msg.message.audioMessage.mimetype || "audio/mpeg";
+            const result = await transcribeAudio(
+              new Uint8Array(audioBytes),
+              mimeType,
+            );
+            if (result.text) {
+              text = result.text;
+              console.log(`[bot] Transcripción: "${text}"`);
+            } else {
+              console.warn(`[bot] Transcripción falló: ${result.error}`);
+            }
+          }
+        } catch (err) {
+          console.error("[bot] Error procesando audio:", err);
+        }
+      }
 
       if (!text) {
         console.log(
@@ -129,20 +157,20 @@ export function setupHandler(sock: WASocket): void {
 
       // Ya aceptó → flujo normal
       if (consent?.status === "accepted") {
-        console.log(`[bot] ✅ Consentimiento aceptado previamente para ${phone}`);
+        console.log(`[bot] Consentimiento aceptado previamente para ${phone}`);
       }
 
       // Declinó previamente → recordar y permitir cambiar decisión
       else if (consent?.status === "declined") {
         const lower = text.trim().toLowerCase();
         if (esAfirmativo(lower)) {
-          console.log(`[bot] 🔄 Usuario cambió opinión y aceptó consentimiento`);
+          console.log(`[bot] Usuario cambió opinión y aceptó consentimiento`);
           setDataConsent(phone, "accepted");
           await sock.sendMessage(remoteJid, { text: CONSENT_ACCEPTED_MSG });
           insertMessage(convo.id, "assistant", CONSENT_ACCEPTED_MSG);
           continue;
         }
-        console.log(`[bot] ⛔ Consentimiento decline previamente para ${phone}`);
+        console.log(`[bot] Consentimiento decline previamente para ${phone}`);
         await sock.sendMessage(remoteJid, { text: CONSENT_DECLINED_REMINDER_MSG });
         insertMessage(convo.id, "assistant", CONSENT_DECLINED_REMINDER_MSG);
         continue;
@@ -155,26 +183,26 @@ export function setupHandler(sock: WASocket): void {
 
         if (alreadyAsked) {
           if (esAfirmativo(lower)) {
-            console.log(`[bot] ✅ Usuario ACEPTÓ consentimiento de datos`);
+            console.log(`[bot] Usuario ACEPTÓ consentimiento de datos`);
             setDataConsent(phone, "accepted");
             await sock.sendMessage(remoteJid, { text: CONSENT_ACCEPTED_MSG });
             insertMessage(convo.id, "assistant", CONSENT_ACCEPTED_MSG);
             continue;
           } else if (esNegativo(lower)) {
-            console.log(`[bot] ❌ Usuario RECHAZÓ consentimiento de datos`);
+            console.log(`[bot] Usuario RECHAZÓ consentimiento de datos`);
             setDataConsent(phone, "declined");
             await sock.sendMessage(remoteJid, { text: CONSENT_DECLINED_MSG });
             insertMessage(convo.id, "assistant", CONSENT_DECLINED_MSG);
             continue;
           } else {
-            console.log(`[bot] ⏳ Respuesta ambigua durante consentimiento, re-preguntando`);
+            console.log(`[bot] Respuesta ambigua durante consentimiento, re-preguntando`);
             await sock.sendMessage(remoteJid, { text: CONSENT_REASK_MSG });
             continue;
           }
         }
 
         // Primera vez — pedir consentimiento
-        console.log(`[bot] 🆕 Solicitando consentimiento de datos a ${phone}`);
+        console.log(`[bot] Solicitando consentimiento de datos a ${phone}`);
         setDataConsent(phone, "pending");
         await sock.sendMessage(remoteJid, { text: CONSENT_REQUEST_MSG });
         insertMessage(convo.id, "assistant", CONSENT_REQUEST_MSG);
@@ -188,7 +216,7 @@ export function setupHandler(sock: WASocket): void {
       try {
         await sock.sendPresenceUpdate("available", remoteJid);
         await sock.readMessages([msg.key]);
-        console.log(`[bot] ✅ Mensaje marcado como leído`);
+        console.log(`[bot] Mensaje marcado como leído`);
       } catch (err) {
         console.warn("[bot] No se pudo marcar como leído:", err);
       }
@@ -205,7 +233,7 @@ export function setupHandler(sock: WASocket): void {
         // Buscar session_id existente para este número
         const existingSessionId = getSessionIdForPhone(phone);
         console.log(
-          `[bot] 🔗 Llamando backend (session: ${existingSessionId || "nueva"})...`,
+          `[bot] Llamando backend (session: ${existingSessionId || "nueva"})...`,
         );
 
         const result = await sendChatMessage(text, existingSessionId ?? undefined);
@@ -213,7 +241,7 @@ export function setupHandler(sock: WASocket): void {
         // Guardar el session_id para próximos mensajes
         if (result.session_id) {
           setSessionIdForPhone(phone, result.session_id);
-          console.log(`[bot] 📝 Session ID: ${result.session_id}`);
+          console.log(`[bot] Session ID: ${result.session_id}`);
         }
 
         // Persistir respuesta del backend
@@ -225,7 +253,7 @@ export function setupHandler(sock: WASocket): void {
         const esperaRestante = DELAY_MINIMO_MS - transcurrido;
         if (esperaRestante > 0) {
           console.log(
-            `[bot] ⏳ Esperando ${esperaRestante}ms adicionales para total ~5s...`,
+            `[bot] Esperando ${esperaRestante}ms adicionales para total ~5s...`,
           );
           await new Promise((r) => setTimeout(r, esperaRestante));
         }
@@ -234,7 +262,24 @@ export function setupHandler(sock: WASocket): void {
         clearInterval(composingInterval);
         await sock.sendPresenceUpdate("paused", remoteJid).catch(() => {});
 
-        await sock.sendMessage(remoteJid, { text: reply });
+        // ─── Audio saliente o texto ────────────────────────────────────
+        if (result.audio_url) {
+          try {
+            const audioBytes = await downloadAudio(result.audio_url);
+            console.log(`[bot] Audio descargado (${audioBytes.length} bytes), enviando...`);
+            await sock.sendMessage(remoteJid, {
+              audio: Buffer.from(audioBytes),
+              mimetype: "audio/mpeg",
+              ptt: true,
+            });
+            console.log(`[bot] → Audio enviado a ${name || phone}`);
+          } catch (err) {
+            console.warn(`[bot] Falló envío de audio, fallback a texto:`, err);
+            await sock.sendMessage(remoteJid, { text: reply });
+          }
+        } else {
+          await sock.sendMessage(remoteJid, { text: reply });
+        }
         console.log(`[bot] → Enviado a ${name || phone} (modelo: ${result.model})`);
       } catch (err) {
         clearInterval(composingInterval);
