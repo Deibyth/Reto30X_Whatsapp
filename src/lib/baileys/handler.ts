@@ -7,9 +7,55 @@ import {
   markOutboxSent,
   getSessionIdForPhone,
   setSessionIdForPhone,
+  getDataConsent,
+  setDataConsent,
 } from "../db";
 import { sendChatMessage } from "../api-client";
 import { startOutboundPoller } from "../../services/outbound-poller";
+
+const CONSENT_URL =
+  "https://www.colsubsidio.com/transparencia-acceso-informacion/tratamiento-datos-personales";
+
+const CONSENT_REQUEST_MSG = [
+  "Antes de continuar, necesito que aceptes nuestra política de tratamiento de datos personales.",
+  "",
+  `Puedes leerla completa aquí:`,
+  CONSENT_URL,
+  "",
+  "¿Aceptas el tratamiento de tus datos personales?",
+  "Responde *Sí* o *No*.",
+].join("\n");
+
+const CONSENT_ACCEPTED_MSG =
+  "¡Gracias por aceptar! Ahora sí, ¿en qué puedo ayudarte?";
+
+const CONSENT_DECLINED_MSG = [
+  "Entendemos tu decisión.",
+  "",
+  "Sin aceptar la política de tratamiento de datos personales no podemos procesar ni almacenar tu información personal ni brindarte asesoría personalizada.",
+  "",
+  "Si en algún momento cambias de opinión, escríbenos de nuevo y podremos ayudarte.",
+].join("\n");
+
+const CONSENT_DECLINED_REMINDER_MSG = [
+  "Previamente indicaste que no aceptas la política de tratamiento de datos personales.",
+  "",
+  "Sin esta aceptación no podemos procesar tu información.",
+  "Si cambias de opinión, escribe *Sí* para aceptar o *No* si mantienes tu decisión.",
+].join("\n");
+
+const CONSENT_REASK_MSG =
+  "Por favor responde *Sí* si aceptas el tratamiento de datos personales, o *No* si no aceptas.";
+
+function esAfirmativo(text: string): boolean {
+  const t = text.toLowerCase().trim();
+  return /^(s[ií]|sip|dale|ok|okey|okay|bueno|vamos|simon|sipo|afirmativo|acepto|de acuerdo|est[aá] bien|claro|yes|yea|yep|seguro|obvio|correcto|sis|dale|dale si|si claro)$/i.test(t);
+}
+
+function esNegativo(text: string): boolean {
+  const t = text.toLowerCase().trim();
+  return /^(n[ií]|no|nop|nope|nel|nunca|no gracias|negativo|no acepto|non|nah|nao|nolis|ni loco|para nada|jam[aá]s)$/i.test(t);
+}
 
 export function setupHandler(sock: WASocket): void {
   sock.ev.on("messages.upsert", async ({ type, messages }) => {
@@ -76,6 +122,63 @@ export function setupHandler(sock: WASocket): void {
       if (!fresh || fresh.mode !== "AI") {
         console.log(`[bot] → modo ${fresh?.mode} — no respondo`);
         return;
+      }
+
+      // ─── Consentimiento de datos personales ─────────────────────────────
+      const consent = getDataConsent(phone);
+
+      // Ya aceptó → flujo normal
+      if (consent?.status === "accepted") {
+        console.log(`[bot] ✅ Consentimiento aceptado previamente para ${phone}`);
+      }
+
+      // Declinó previamente → recordar y permitir cambiar decisión
+      else if (consent?.status === "declined") {
+        const lower = text.trim().toLowerCase();
+        if (esAfirmativo(lower)) {
+          console.log(`[bot] 🔄 Usuario cambió opinión y aceptó consentimiento`);
+          setDataConsent(phone, "accepted");
+          await sock.sendMessage(remoteJid, { text: CONSENT_ACCEPTED_MSG });
+          insertMessage(convo.id, "assistant", CONSENT_ACCEPTED_MSG);
+          continue;
+        }
+        console.log(`[bot] ⛔ Consentimiento decline previamente para ${phone}`);
+        await sock.sendMessage(remoteJid, { text: CONSENT_DECLINED_REMINDER_MSG });
+        insertMessage(convo.id, "assistant", CONSENT_DECLINED_REMINDER_MSG);
+        continue;
+      }
+
+      // Pendiente o sin registro → manejar flujo de consentimiento
+      else {
+        const lower = text.trim().toLowerCase();
+        const alreadyAsked = consent?.status === "pending";
+
+        if (alreadyAsked) {
+          if (esAfirmativo(lower)) {
+            console.log(`[bot] ✅ Usuario ACEPTÓ consentimiento de datos`);
+            setDataConsent(phone, "accepted");
+            await sock.sendMessage(remoteJid, { text: CONSENT_ACCEPTED_MSG });
+            insertMessage(convo.id, "assistant", CONSENT_ACCEPTED_MSG);
+            continue;
+          } else if (esNegativo(lower)) {
+            console.log(`[bot] ❌ Usuario RECHAZÓ consentimiento de datos`);
+            setDataConsent(phone, "declined");
+            await sock.sendMessage(remoteJid, { text: CONSENT_DECLINED_MSG });
+            insertMessage(convo.id, "assistant", CONSENT_DECLINED_MSG);
+            continue;
+          } else {
+            console.log(`[bot] ⏳ Respuesta ambigua durante consentimiento, re-preguntando`);
+            await sock.sendMessage(remoteJid, { text: CONSENT_REASK_MSG });
+            continue;
+          }
+        }
+
+        // Primera vez — pedir consentimiento
+        console.log(`[bot] 🆕 Solicitando consentimiento de datos a ${phone}`);
+        setDataConsent(phone, "pending");
+        await sock.sendMessage(remoteJid, { text: CONSENT_REQUEST_MSG });
+        insertMessage(convo.id, "assistant", CONSENT_REQUEST_MSG);
+        continue;
       }
 
       // --- Feedback visual: marcar como leído + delay natural ---

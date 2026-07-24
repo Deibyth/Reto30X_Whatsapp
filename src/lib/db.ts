@@ -64,6 +64,13 @@ db.exec(`
     created_at INTEGER NOT NULL DEFAULT (unixepoch()),
     updated_at INTEGER NOT NULL DEFAULT (unixepoch())
   );
+
+  CREATE TABLE IF NOT EXISTS data_consent (
+    phone TEXT PRIMARY KEY NOT NULL,
+    status TEXT CHECK(status IN ('pending','accepted','declined')) NOT NULL DEFAULT 'pending',
+    accepted_at INTEGER,
+    updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+  );
 `);
 
 export type Conversation = {
@@ -285,6 +292,44 @@ export function setSessionIdForPhone(phone: string, sessionId: string): void {
 
 export function deletePhoneSession(phone: string): void {
   db.prepare("DELETE FROM phone_sessions WHERE phone = ?").run(phone);
+}
+
+// ──────────────────────────────────────────────
+// Data Consent
+// ──────────────────────────────────────────────
+
+export type DataConsentStatus = "pending" | "accepted" | "declined";
+
+export type DataConsent = {
+  phone: string;
+  status: DataConsentStatus;
+  accepted_at: number | null;
+  updated_at: number;
+};
+
+export function getDataConsent(phone: string): DataConsent | undefined {
+  return db
+    .prepare("SELECT * FROM data_consent WHERE phone = ?")
+    .get(phone) as DataConsent | undefined;
+}
+
+export function setDataConsent(
+  phone: string,
+  status: DataConsentStatus,
+): void {
+  const acceptedAt = status === "accepted" ? Math.floor(Date.now() / 1000) : null;
+  db.prepare(
+    `INSERT INTO data_consent (phone, status, accepted_at, updated_at)
+     VALUES (?, ?, ?, unixepoch())
+     ON CONFLICT(phone) DO UPDATE SET
+       status = excluded.status,
+       accepted_at = COALESCE(excluded.accepted_at, data_consent.accepted_at),
+       updated_at = unixepoch()`,
+  ).run(phone, status, acceptedAt);
+}
+
+export function deleteDataConsent(phone: string): void {
+  db.prepare("DELETE FROM data_consent WHERE phone = ?").run(phone);
 }
 
 export function closeDb(): void {
