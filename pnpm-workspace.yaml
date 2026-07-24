@@ -1,0 +1,11 @@
+packages:
+  - '.'
+
+blockExoticSubdeps: false
+shamefullyHoist: true
+allowBuilds:
+  '@whiskeysockets/baileys': true
+  'better-sqlite3': true
+  'esbuild': true
+  'protobufjs': true
+  'sharp': true

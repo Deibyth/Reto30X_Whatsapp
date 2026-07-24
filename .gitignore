@@ -1,0 +1,11 @@
+node_modules/
+.next/
+out/
+data/
+auth/
+*.db
+.env.local
+.env
+dist/
+*.tsbuildinfo
+.atl/
