@@ -13,6 +13,7 @@ import {
   markOutboundFailed,
   downloadAudio,
 } from "../lib/api-client";
+import { convertToVoiceNote } from "../lib/audio-converter";
 import { setDataConsent } from "../lib/db";
 import fs from "node:fs";
 import path from "node:path";
@@ -82,18 +83,26 @@ export function startOutboundPoller(sock: WASocket): void {
           setDataConsent(jid, "accepted");
 
           if (item.audio_url) {
-            // Send audio message (download from backend first)
-            // NOTE: MP3 with ptt:true requires OGG Opus — WhatsApp silently drops MP3 voice notes.
-            // Sending as regular audio (no ptt) works with WhatsApp native MP3 playback.
-            const audioBytes = await downloadAudio(item.audio_url);
-            await sock.sendMessage(jid, {
-              audio: Buffer.from(audioBytes),
-              mimetype: "audio/mpeg",
-              ptt: false,
-            });
-            log(
-              `[outbound-poller] Audio sent to ${jid} (${item.notification_id})`,
-            );
+            try {
+              const audioBytes = await downloadAudio(item.audio_url);
+              log(`[outbound-poller] Audio descargado (${audioBytes.length} bytes), convirtiendo a nota de voz...`);
+              const oggBytes = await convertToVoiceNote(audioBytes);
+              await sock.sendMessage(jid, {
+                audio: Buffer.from(oggBytes),
+                mimetype: "audio/ogg; codecs=opus",
+                ptt: true,
+              });
+              log(
+                `[outbound-poller] Nota de voz enviada a ${jid} (${item.notification_id})`,
+              );
+            } catch (audioErr) {
+              // Fallback to text when audio download/conversion/send fails
+              log(`[outbound-poller] Audio falló para ${jid}, fallback a texto: ${audioErr instanceof Error ? audioErr.message : String(audioErr)}`);
+              await sock.sendMessage(jid, { text: item.content });
+              log(
+                `[outbound-poller] Text fallback sent to ${jid} (${item.notification_id})`,
+              );
+            }
           } else {
             // Send text message
             await sock.sendMessage(jid, { text: item.content });
