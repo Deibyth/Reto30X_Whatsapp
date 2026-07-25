@@ -126,13 +126,16 @@ export async function transcribeAudio(
 }
 
 /**
- * Descarga un archivo de audio del backend.
+ * Download an audio file from the backend or Cloudinary.
  *
- * @param audioUrl - URL relativa del audio (ej: "/audio/abc123.mp3")
+ * @param audioUrl - URL relativa (ej: "/audio/abc123.mp3") o absoluta (Cloudinary)
  * @returns Uint8Array con los bytes del audio
  */
 export async function downloadAudio(audioUrl: string): Promise<Uint8Array> {
-  const url = `${BACKEND_API_URL}${audioUrl}`;
+  // If it's already an absolute URL (Cloudinary), use it directly
+  const url = audioUrl.startsWith("http")
+    ? audioUrl
+    : `${BACKEND_API_URL}${audioUrl}`;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 10_000);
 
