@@ -12,6 +12,7 @@ import {
   setDataConsent,
 } from "../db";
 import { sendChatMessage, transcribeAudio, downloadAudio } from "../api-client";
+import { convertToVoiceNote } from "../audio-converter";
 import { startOutboundPoller } from "../../services/outbound-poller";
 
 const CONSENT_URL =
@@ -262,19 +263,21 @@ export function setupHandler(sock: WASocket): void {
         clearInterval(composingInterval);
         await sock.sendPresenceUpdate("paused", remoteJid).catch(() => {});
 
-        // ─── Audio saliente o texto ────────────────────────────────────
+        // ─── Audio saliente (voz natural) o texto ──────────────────────
         if (result.audio_url) {
           try {
             const audioBytes = await downloadAudio(result.audio_url);
-            console.log(`[bot] Audio descargado (${audioBytes.length} bytes), enviando...`);
+            console.log(`[bot] Audio descargado (${audioBytes.length} bytes), convirtiendo a nota de voz...`);
+            const oggBytes = await convertToVoiceNote(audioBytes);
+            console.log(`[bot] Audio convertido a OGG Opus (${oggBytes.length} bytes), enviando...`);
             await sock.sendMessage(remoteJid, {
-              audio: Buffer.from(audioBytes),
-              mimetype: "audio/mpeg",
+              audio: Buffer.from(oggBytes),
+              mimetype: "audio/ogg; codecs=opus",
               ptt: true,
             });
-            console.log(`[bot] → Audio enviado a ${name || phone}`);
+            console.log(`[bot] → Nota de voz enviada a ${name || phone}`);
           } catch (err) {
-            console.warn(`[bot] Falló envío de audio, fallback a texto:`, err);
+            console.warn(`[bot] Falló envío de nota de voz, fallback a texto:`, err);
             await sock.sendMessage(remoteJid, { text: reply });
           }
         } else {
