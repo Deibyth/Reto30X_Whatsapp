@@ -16,10 +16,12 @@
     "prod:all": "concurrently --kill-others --names BOT,WEB --prefix-colors yellow,cyan \"pnpm run start:bot\" \"pnpm start\""
   },
   "dependencies": {
+    "@ffmpeg-installer/ffmpeg": "^1.1.0",
     "@tailwindcss/postcss": "^4.3.0",
     "@whiskeysockets/baileys": "7.0.0-rc13",
     "better-sqlite3": "^11.7.0",
     "concurrently": "^9.1.0",
+    "fluent-ffmpeg": "^2.1.3",
     "next": "^15.2.0",
     "pino": "^9.6.0",
     "qrcode": "^1.5.4",
