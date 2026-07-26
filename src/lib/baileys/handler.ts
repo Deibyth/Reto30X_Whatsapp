@@ -12,8 +12,75 @@ import {
   setDataConsent,
 } from "../db";
 import { sendChatMessage, transcribeAudio, downloadAudio } from "../api-client";
-import { convertToVoiceNote } from "../audio-converter";
 import { startOutboundPoller } from "../../services/outbound-poller";
+import { convertToVoiceNote } from "../../lib/audio-converter";
+
+/** Check if Baileys socket is connected and ready to send. */
+function isSocketReady(sock: WASocket): boolean {
+  return !!sock.user && sock.ws?.isOpen;
+}
+
+/** Send a message with retry on transient connection errors. */
+async function sendWithRetry(
+  sock: WASocket,
+  jid: string,
+  content: { text: string } | { audio: Buffer; mimetype: string; ptt: boolean },
+  maxRetries = 2,
+  baseDelayMs = 1000,
+): Promise<void> {
+  let lastError: Error | undefined;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    if (!isSocketReady(sock)) {
+      lastError = new Error("Socket not ready");
+      if (attempt < maxRetries) {
+        console.log(`[sendWithRetry] Socket not ready, waiting ${baseDelayMs}ms before retry...`);
+        await new Promise((r) => setTimeout(r, baseDelayMs * (attempt + 1)));
+        continue;
+      }
+    }
+
+    try {
+      await sock.sendMessage(jid, content);
+      return; // Success
+    } catch (err) {
+      lastError = err instanceof Error ? err : new Error(String(err));
+      const msg = lastError.message;
+
+      // Only retry on transient connection errors
+      const isTransient =
+        msg.includes("Connection Closed") ||
+        msg.includes("not open") ||
+        msg.includes("socket closed") ||
+        msg.includes("ECONNRESET");
+
+      if (isTransient && attempt < maxRetries) {
+        console.log(`[sendWithRetry] Transient error (attempt ${attempt + 1}/${maxRetries + 1}): ${msg}, retrying...`);
+        await new Promise((r) => setTimeout(r, baseDelayMs * (attempt + 1)));
+        continue;
+      }
+
+      throw lastError; // Non-transient or max retries reached
+    }
+  }
+
+  throw lastError;
+}
+
+/** Send audio message with retry logic — converts MP3 to OGG Opus for native voice note (PTT). */
+async function sendAudioWithRetry(
+  sock: WASocket,
+  jid: string,
+  audioBytes: Uint8Array,
+): Promise<void> {
+  // Convert MP3 -> OGG Opus for WhatsApp voice note
+  const oggBytes = await convertToVoiceNote(audioBytes);
+  await sendWithRetry(sock, jid, {
+    audio: Buffer.from(oggBytes),
+    mimetype: "audio/ogg; codecs=opus",
+    ptt: true, // native voice note
+  });
+}
 
 const CONSENT_URL =
   "https://www.colsubsidio.com/transparencia-acceso-informacion/tratamiento-datos-personales";
@@ -263,25 +330,20 @@ export function setupHandler(sock: WASocket): void {
         clearInterval(composingInterval);
         await sock.sendPresenceUpdate("paused", remoteJid).catch(() => {});
 
-        // ─── Audio saliente (voz natural) o texto ──────────────────────
+        // ─── Audio saliente (nota de voz nativa) o texto ──────────────────────
         if (result.audio_url) {
           try {
             const audioBytes = await downloadAudio(result.audio_url);
-            console.log(`[bot] Audio descargado (${audioBytes.length} bytes), convirtiendo a nota de voz...`);
-            const oggBytes = await convertToVoiceNote(audioBytes);
-            console.log(`[bot] Audio convertido a OGG Opus (${oggBytes.length} bytes), enviando...`);
-            await sock.sendMessage(remoteJid, {
-              audio: Buffer.from(oggBytes),
-              mimetype: "audio/ogg; codecs=opus",
-              ptt: true,
-            });
+            console.log(`[bot] Audio descargado (${audioBytes.length} bytes), convirtiendo a nota de voz (OGG Opus)...`);
+            // Convertir MP3 -> OGG Opus y enviar como nota de voz nativa (ptt: true)
+            await sendAudioWithRetry(sock, remoteJid, audioBytes);
             console.log(`[bot] → Nota de voz enviada a ${name || phone}`);
           } catch (err) {
-            console.warn(`[bot] Falló envío de nota de voz, fallback a texto:`, err);
+            console.warn(`[bot] Falló envío de nota de voz tras reintentos, fallback a texto:`, err);
             await sock.sendMessage(remoteJid, { text: reply });
           }
         } else {
-          await sock.sendMessage(remoteJid, { text: reply });
+          await sendWithRetry(sock, remoteJid, { text: reply });
         }
         console.log(`[bot] → Enviado a ${name || phone} (modelo: ${result.model})`);
       } catch (err) {
@@ -294,7 +356,7 @@ export function setupHandler(sock: WASocket): void {
           "Lo siento, estoy teniendo problemas para conectarme en este momento. " +
           "Por favor intentá de nuevo en unos segundos.";
         try {
-          await sock.sendMessage(remoteJid, { text: errorMsg });
+          await sendWithRetry(sock, remoteJid, { text: errorMsg });
         } catch {}
       }
     }
@@ -307,7 +369,7 @@ export function setupHandler(sock: WASocket): void {
         // item.phone ya incluye @s.whatsapp.net o @lid
         const jid = item.phone;
         try {
-          await sock.sendMessage(jid, { text: item.content });
+          await sendWithRetry(sock, jid, { text: item.content });
           markOutboxSent(item.id);
           console.log(`[bot] → Outbox enviado a ${item.phone}`);
         } catch (err) {
